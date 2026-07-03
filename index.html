@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>دفتر الحضور والأجور</title>
+<meta name="theme-color" content="#2B2620" />
+<meta name="description" content="دفتر حضور وأجور للعمال - تسجيل حضور بالساعات وحساب الرواتب شهرياً" />
+<link rel="manifest" href="manifest.json" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<link rel="icon" href="icon-192.png" />
+<style>
+  html, body { margin: 0; padding: 0; background: #EAE3D3; }
+  #root { min-height: 100vh; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" onerror="document.getElementById('boot-msg').innerText='فشل تحميل React من الإنترنت. تأكد من اتصالك بالإنترنت وأعد فتح الصفحة.'"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" onerror="document.getElementById('boot-msg').innerText='فشل تحميل ReactDOM من الإنترنت. تأكد من اتصالك بالإنترنت وأعد فتح الصفحة.'"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js" onerror="document.getElementById('boot-msg').innerText='فشل تحميل Babel من الإنترنت. تأكد من اتصالك بالإنترنت وأعد فتح الصفحة.'"></script>
+<script>
+  window.onerror = function (msg, url, line, col, err) {
+    var el = document.getElementById('boot-msg');
+    if (el) el.innerText = 'حصل خطأ: ' + msg + ' (سطر ' + line + ')';
+    return false;
+  };
+  setTimeout(function () {
+    var el = document.getElementById('boot-msg');
+    if (el && !window.__APP_MOUNTED__) {
+      el.innerText = 'التطبيق يتأخر في التحميل. تأكد من الإنترنت وأعد المحاولة، أو أرسل لقطة شاشة لهذه الرسالة.';
+    }
+  }, 6000);
+</script>
+</head>
+<body>
+<div id="root"><div id="boot-msg" style="font-family:sans-serif;padding:24px;text-align:center;color:#5A5145;direction:rtl;">جارٍ تحميل التطبيق...</div></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+// ---- محاكاة نظام window.storage باستخدام localStorage (يعمل بشكل دائم على جهاز المستخدم) ----
+window.storage = {
+  get: async (key) => {
+    const v = localStorage.getItem(key);
+    if (v === null) throw new Error("not found");
+    return { key, value: v, shared: false };
+  },
+  set: async (key, value) => {
+    localStorage.setItem(key, value);
+    return { key, value, shared: false };
+  },
+  delete: async (key) => {
+    localStorage.removeItem(key);
+    return { key, deleted: true, shared: false };
+  },
+  list: async (prefix) => {
+    const keys = Object.keys(localStorage).filter(k => !prefix || k.startsWith(prefix));
+    return { keys, prefix, shared: false };
+  },
+};
+
+// ---- بدائل بسيطة لأيقونات lucide-react (نصوص/رموز بدل الاعتماد على مكتبة خارجية) ----
+const IconBase = ({ children, size = 16 }) => <span style={{ fontSize: size, lineHeight: 1, display: "inline-block" }}>{children}</span>;
+const Plus = (p) => <IconBase {...p}>+</IconBase>;
+const Trash2 = (p) => <IconBase {...p}>{"\u{1F5D1}"}</IconBase>;
+const Pencil = (p) => <IconBase {...p}>{"\u270F\uFE0F"}</IconBase>;
+const ChevronRight = (p) => <IconBase {...p}>{"\u203A"}</IconBase>;
+const ChevronLeft = (p) => <IconBase {...p}>{"\u2039"}</IconBase>;
+const Printer = (p) => <IconBase {...p}>{"\u{1F5A8}"}</IconBase>;
+const RotateCcw = (p) => <IconBase {...p}>{"\u21BA"}</IconBase>;
+const Save = (p) => <IconBase {...p}>{"\u{1F4BE}"}</IconBase>;
+const X = (p) => <IconBase {...p}>{"\u2715"}</IconBase>;
+const Check = (p) => <IconBase {...p}>{"\u2714"}</IconBase>;
+
+
+// ---- ألوان الدفتر (Ledger palette) ----
+const C = {
+  paper: "#EAE3D3",
+  paperDark: "#DED2AF",
+  paperLine: "#C9BC93",
+  ink: "#2B2620",
+  inkSoft: "#5A5145",
+  oxblood: "#8B2E2E",
+  orange: "#E0631F",
+  green: "#3F6B3D",
+  blue: "#35607A",
+  amber: "#B8811F",
+};
+
+function dayCellStyle(hours) {
+  if (hours === undefined || hours === null || hours === "") {
+    return { fill: "transparent", color: C.inkSoft, border: true };
+  }
+  if (hours === 0) return { fill: C.oxblood, color: "#fff", border: false }; // غائب
+  if (hours < 8) return { fill: C.amber, color: "#fff", border: false }; // جزئي
+  if (hours === 8) return { fill: C.green, color: "#fff", border: false }; // يوم كامل
+  return { fill: C.blue, color: "#fff", border: false }; // أكثر من 8 ساعات
+}
+
+const MONTHS_AR = ["يناير","فبراير","مارس","أبريل","مايو","يونيو","يوليو","أغسطس","سبتمبر","أكتوبر","نوفمبر","ديسمبر"];
+
+function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();
+}
+function attKey(workerId, year, month) {
+  return `${workerId}:${year}-${String(month).padStart(2, "0")}`;
+}
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+function fmt(n) {
+  return new Intl.NumberFormat("ar-EG", { maximumFractionDigits: 2 }).format(n || 0);
+}
+function daysHoursLabel(totalHours) {
+  const d = Math.floor(totalHours / 8);
+  const h = Math.round((totalHours - d * 8) * 100) / 100;
+  const parts = [];
+  if (d > 0) parts.push(`${d} يوم`);
+  if (h > 0 || parts.length === 0) parts.push(`${fmt(h)} ساعة`);
+  return parts.join(" و ");
+}
+
+const DEFAULT_DATA = {
+  companyName: "ورشتي",
+  workers: [],
+  attendance: {}, // key -> { day: hours }  (0 = غائب, بدون قيمة = لم يُسجَّل بعد)
+  advances: {}, // key -> number
+  overtime: {}, // key -> hours
+};
+
+function AttendanceLedger() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [tab, setTab] = useState("workers");
+  const now = new Date();
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [newWorker, setNewWorker] = useState({ name: "", rate: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editDraft, setEditDraft] = useState({ name: "", rate: "" });
+  const [savingFlash, setSavingFlash] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [confirmModal, setConfirmModal] = useState(null); // { message, onYes }
+  const [dayModal, setDayModal] = useState(null); // { workerId, workerName, day, value }
+
+  const notify = useCallback((msg) => {
+    setToast(msg);
+    setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 2200);
+  }, []);
+
+  const askConfirm = useCallback((message, onYes) => {
+    setConfirmModal({ message, onYes });
+  }, []);
+
+  // تحميل البيانات من التخزين
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await window.storage.get("ledger-data", false);
+        if (res && res.value) {
+          setData(JSON.parse(res.value));
+        } else {
+          setData(DEFAULT_DATA);
+        }
+      } catch (e) {
+        setData(DEFAULT_DATA);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const persist = useCallback(async (next) => {
+    setData(next);
+    try {
+      setSavingFlash(true);
+      await window.storage.set("ledger-data", JSON.stringify(next), false);
+    } catch (e) {
+      console.error("تعذر الحفظ", e);
+    } finally {
+      setTimeout(() => setSavingFlash(false), 500);
+    }
+  }, []);
+
+  const addWorker = () => {
+    if (!newWorker.name.trim() || !newWorker.rate) return;
+    const w = { id: uid(), name: newWorker.name.trim(), rate: parseFloat(newWorker.rate) || 0 };
+    persist({ ...data, workers: [...data.workers, w] });
+    setNewWorker({ name: "", rate: "" });
+  };
+
+  const startEdit = (w) => {
+    setEditingId(w.id);
+    setEditDraft({ name: w.name, rate: String(w.rate) });
+  };
+  const saveEdit = (id) => {
+    const w = data.workers.find((x) => x.id === id);
+    askConfirm(`سيتم تعديل بيانات العامل "${w?.name}". هل تريد المتابعة؟`, () => {
+      const workers = data.workers.map((x) =>
+        x.id === id ? { ...x, name: editDraft.name.trim() || x.name, rate: parseFloat(editDraft.rate) || 0 } : x
+      );
+      persist({ ...data, workers });
+      setEditingId(null);
+      notify("تم حفظ تعديل بيانات العامل");
+    });
+  };
+  const deleteWorker = (id) => {
+    const w = data.workers.find((x) => x.id === id);
+    askConfirm(`تحذير: سيتم حذف العامل "${w?.name}" وكل سجل حضوره وأجوره نهائياً ولا يمكن التراجع. هل أنت متأكد؟`, () => {
+      const workers = data.workers.filter((x) => x.id !== id);
+      const attendance = { ...data.attendance };
+      const advances = { ...data.advances };
+      const overtime = { ...data.overtime };
+      Object.keys(attendance).forEach((k) => { if (k.startsWith(id + ":")) delete attendance[k]; });
+      Object.keys(advances).forEach((k) => { if (k.startsWith(id + ":")) delete advances[k]; });
+      Object.keys(overtime).forEach((k) => { if (k.startsWith(id + ":")) delete overtime[k]; });
+      persist({ ...data, workers, attendance, advances, overtime });
+      notify(`تم حذف العامل "${w?.name}"`);
+    });
+  };
+
+  const openDayModal = (workerId, day) => {
+    const w = data.workers.find((x) => x.id === workerId);
+    const key = attKey(workerId, year, month);
+    const existing = data.attendance[key]?.[String(day)];
+    setDayModal({ workerId, workerName: w?.name, day, value: existing === undefined ? "" : String(existing) });
+  };
+
+  const saveDayModal = () => {
+    const { workerId, day, value, workerName } = dayModal;
+    const key = attKey(workerId, year, month);
+    const monthData = { ...(data.attendance[key] || {}) };
+    if (value === "" || value === null) {
+      delete monthData[String(day)];
+      persist({ ...data, attendance: { ...data.attendance, [key]: monthData } });
+      notify(`تم مسح تسجيل يوم ${day} — ${workerName}`);
+      setDayModal(null);
+      return;
+    }
+    const hours = Math.max(0, parseFloat(value) || 0);
+    monthData[String(day)] = hours;
+    persist({ ...data, attendance: { ...data.attendance, [key]: monthData } });
+    notify(hours === 0 ? `✓ تم تسجيل يوم ${day}: غائب — ${workerName}` : `✓ تم تسجيل يوم ${day}: ${fmt(hours)} ساعة — ${workerName}`);
+    setDayModal(null);
+  };
+
+  const setAdvance = (workerId, value) => {
+    const key = attKey(workerId, year, month);
+    persist({ ...data, advances: { ...data.advances, [key]: parseFloat(value) || 0 } });
+    notify("تم تحديث السلفة/الخصم");
+  };
+
+  const setOvertime = (workerId, value) => {
+    const key = attKey(workerId, year, month);
+    persist({ ...data, overtime: { ...data.overtime, [key]: parseFloat(value) || 0 } });
+    notify("تم تحديث الساعات الإضافية");
+  };
+
+  const changeMonth = (delta) => {
+    let m = month + delta, y = year;
+    if (m > 12) { m = 1; y++; }
+    if (m < 1) { m = 12; y--; }
+    setMonth(m); setYear(y);
+  };
+
+  const payroll = useMemo(() => {
+    if (!data) return [];
+    const nDays = daysInMonth(year, month);
+    return data.workers.map((w) => {
+      const key = attKey(w.id, year, month);
+      const monthData = data.attendance[key] || {};
+      let workedHours = 0, absentDays = 0, recordedDays = 0;
+      for (let d = 1; d <= nDays; d++) {
+        const h = monthData[String(d)];
+        if (h === undefined) continue;
+        recordedDays++;
+        if (h === 0) absentDays++;
+        else workedHours += h;
+      }
+      const hourlyRate = w.rate / 8;
+      const paidDays = workedHours / 8;
+      const basePay = workedHours * hourlyRate;
+      const overtimeHours = data.overtime[key] || 0;
+      const overtimePay = overtimeHours * hourlyRate;
+      const gross = basePay + overtimePay;
+      const advance = data.advances[key] || 0;
+      const net = gross - advance;
+      const totalHoursEquivalent = workedHours + overtimeHours;
+      return { worker: w, workedHours, absentDays, recordedDays, paidDays, basePay, overtimeHours, overtimePay, gross, advance, net, totalHoursEquivalent };
+    });
+  }, [data, year, month]);
+
+  const totals = useMemo(() => {
+    return payroll.reduce((acc, p) => ({
+      basePay: acc.basePay + p.basePay, overtimePay: acc.overtimePay + p.overtimePay,
+      gross: acc.gross + p.gross, advance: acc.advance + p.advance, net: acc.net + p.net,
+    }), { basePay: 0, overtimePay: 0, gross: 0, advance: 0, net: 0 });
+  }, [payroll]);
+
+  if (loading || !data) {
+    return (
+      <div style={{ background: C.paper, color: C.ink, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Cairo, sans-serif" }}>
+        جارِ فتح الدفتر...
+      </div>
+    );
+  }
+
+  const nDays = daysInMonth(year, month);
+
+  return (
+    <div dir="rtl" lang="ar" style={{ background: C.paper, minHeight: "100vh", fontFamily: "'Cairo', sans-serif", color: C.ink }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=Lalezar&display=swap');
+        * { box-sizing: border-box; }
+        body { margin: 0; }
+        .stamp-btn { transition: transform 0.12s ease; }
+        .stamp-btn:active { transform: scale(0.85) rotate(-4deg); }
+        .ruled { background-image: repeating-linear-gradient(${C.paperLine} 0 1px, transparent 1px 34px); }
+        input:focus, textarea:focus { outline: 2px solid ${C.orange}; outline-offset: 1px; }
+        @media print {
+          .no-print { display: none !important; }
+          body, div { background: white !important; }
+        }
+      `}</style>
+
+      {/* رأس الصفحة */}
+      <header style={{ padding: "20px 16px 12px", borderBottom: `3px double ${C.ink}` }} className="no-print">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 30, color: C.orange, letterSpacing: 1 }}>
+              دفتر الحضور والأجور
+            </div>
+            <input
+              value={data.companyName}
+              onChange={(e) => persist({ ...data, companyName: e.target.value })}
+              style={{ background: "transparent", border: "none", borderBottom: `1px dashed ${C.inkSoft}`, color: C.inkSoft, fontSize: 14, padding: "2px 0", fontFamily: "Cairo" }}
+              placeholder="اسم الورشة / المحل"
+            />
+          </div>
+          <div style={{ fontSize: 12, color: savingFlash ? C.green : C.inkSoft, display: "flex", alignItems: "center", gap: 4, minHeight: 18 }}>
+            {savingFlash ? (<><Save size={14} /> تم الحفظ</>) : null}
+          </div>
+        </div>
+
+        {/* التبويبات */}
+        <nav style={{ display: "flex", gap: 6, marginTop: 16 }}>
+          {[
+            { id: "workers", label: "العمّال" },
+            { id: "attendance", label: "الحضور" },
+            { id: "payroll", label: "كشف الرواتب" },
+          ].map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              style={{
+                padding: "8px 18px",
+                background: tab === t.id ? C.ink : "transparent",
+                color: tab === t.id ? C.paper : C.ink,
+                border: `2px solid ${C.ink}`,
+                borderBottom: tab === t.id ? "none" : `2px solid ${C.ink}`,
+                borderRadius: "8px 8px 0 0",
+                fontFamily: "Cairo", fontWeight: 700, fontSize: 14, cursor: "pointer",
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main style={{ padding: 16, maxWidth: 1000, margin: "0 auto" }}>
+        {/* ================= تبويب العمّال ================= */}
+        {tab === "workers" && (
+          <section>
+            <div style={{ background: "#fff", border: `1px solid ${C.paperLine}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+              <h3 style={{ margin: "0 0 10px", fontSize: 15 }}>إضافة عامل جديد</h3>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <input
+                  placeholder="اسم العامل"
+                  value={newWorker.name}
+                  onChange={(e) => setNewWorker({ ...newWorker, name: e.target.value })}
+                  style={{ flex: "1 1 160px", padding: 10, border: `1px solid ${C.paperLine}`, borderRadius: 6, fontFamily: "Cairo" }}
+                />
+                <input
+                  placeholder="سعر يوم العمل"
+                  type="number"
+                  inputMode="decimal"
+                  value={newWorker.rate}
+                  onChange={(e) => setNewWorker({ ...newWorker, rate: e.target.value })}
+                  style={{ width: 140, padding: 10, border: `1px solid ${C.paperLine}`, borderRadius: 6, fontFamily: "Cairo" }}
+                />
+                <button
+                  onClick={addWorker}
+                  style={{ background: C.orange, color: "#fff", border: "none", borderRadius: 6, padding: "10px 18px", display: "flex", alignItems: "center", gap: 6, fontWeight: 700, cursor: "pointer", fontFamily: "Cairo" }}
+                >
+                  <Plus size={16} /> إضافة
+                </button>
+              </div>
+            </div>
+
+            {data.workers.length === 0 ? (
+              <p style={{ color: C.inkSoft, textAlign: "center", padding: 30 }}>لا يوجد عمال بعد. أضف أول عامل من الأعلى.</p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {data.workers.map((w) => (
+                  <div key={w.id} style={{ background: "#fff", border: `1px solid ${C.paperLine}`, borderRadius: 8, padding: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                    {editingId === w.id ? (
+                      <>
+                        <div style={{ display: "flex", gap: 8, flex: 1 }}>
+                          <input value={editDraft.name} onChange={(e) => setEditDraft({ ...editDraft, name: e.target.value })} style={{ flex: 1, padding: 8, border: `1px solid ${C.paperLine}`, borderRadius: 6 }} />
+                          <input type="number" value={editDraft.rate} onChange={(e) => setEditDraft({ ...editDraft, rate: e.target.value })} style={{ width: 110, padding: 8, border: `1px solid ${C.paperLine}`, borderRadius: 6 }} />
+                        </div>
+                        <button onClick={() => saveEdit(w.id)} style={{ background: C.green, color: "#fff", border: "none", borderRadius: 6, padding: 8, cursor: "pointer" }}><Check size={16} /></button>
+                        <button onClick={() => setEditingId(null)} style={{ background: "transparent", color: C.inkSoft, border: `1px solid ${C.paperLine}`, borderRadius: 6, padding: 8, cursor: "pointer" }}><X size={16} /></button>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <div style={{ fontWeight: 700 }}>{w.name}</div>
+                          <div style={{ fontSize: 13, color: C.inkSoft }}>{fmt(w.rate)} / يوم</div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => startEdit(w)} style={{ background: "transparent", border: `1px solid ${C.paperLine}`, borderRadius: 6, padding: 8, cursor: "pointer" }}><Pencil size={15} /></button>
+                          <button onClick={() => deleteWorker(w.id)} style={{ background: "transparent", border: `1px solid ${C.oxblood}`, color: C.oxblood, borderRadius: 6, padding: 8, cursor: "pointer" }}><Trash2 size={15} /></button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* ================= تبويب الحضور ================= */}
+        {tab === "attendance" && (
+          <section>
+            <MonthPicker year={year} month={month} onChange={changeMonth} />
+            {data.workers.length === 0 ? (
+              <p style={{ color: C.inkSoft, textAlign: "center", padding: 30 }}>أضف عمالاً أولاً من تبويب "العمّال".</p>
+            ) : (
+              <>
+                <Legend />
+                <div style={{ overflowX: "auto", border: `1px solid ${C.paperLine}`, borderRadius: 8, background: "#fff" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ position: "sticky", right: 0, background: C.paperDark, padding: 8, minWidth: 110, borderBottom: `2px solid ${C.ink}`, textAlign: "start" }}>العامل</th>
+                        {Array.from({ length: nDays }, (_, i) => i + 1).map((d) => (
+                          <th key={d} style={{ padding: "6px 4px", borderBottom: `2px solid ${C.ink}`, minWidth: 34, color: C.inkSoft, fontWeight: 600 }}>{d}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.workers.map((w) => {
+                        const key = attKey(w.id, year, month);
+                        const monthData = data.attendance[key] || {};
+                        return (
+                          <tr key={w.id}>
+                            <td style={{ position: "sticky", right: 0, background: "#fff", padding: 8, fontWeight: 700, borderBottom: `1px solid ${C.paperLine}`, whiteSpace: "nowrap" }}>{w.name}</td>
+                            {Array.from({ length: nDays }, (_, i) => i + 1).map((d) => {
+                              const h = monthData[String(d)];
+                              const st = dayCellStyle(h);
+                              return (
+                                <td key={d} style={{ padding: 3, textAlign: "center", borderBottom: `1px solid ${C.paperLine}` }}>
+                                  <button
+                                    className="stamp-btn"
+                                    onClick={() => openDayModal(w.id, d)}
+                                    style={{
+                                      width: 28, height: 28, borderRadius: "50%",
+                                      background: st.border ? "#fff" : st.fill,
+                                      border: st.border ? `1.5px dashed ${C.paperLine}` : "none",
+                                      color: st.color, fontSize: 10, fontWeight: 800, cursor: "pointer",
+                                    }}
+                                    title={h === undefined ? "لم يُسجَّل" : h === 0 ? "غائب" : `${h} ساعة`}
+                                  >
+                                    {h === undefined ? "" : h === 0 ? "✕" : h}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* ================= تبويب كشف الرواتب ================= */}
+        {tab === "payroll" && (
+          <section>
+            <MonthPicker year={year} month={month} onChange={changeMonth} />
+            {data.workers.length === 0 ? (
+              <p style={{ color: C.inkSoft, textAlign: "center", padding: 30 }}>لا يوجد عمال بعد.</p>
+            ) : (
+              <>
+                {/* رأس التقرير الشهري (يظهر أيضاً عند الطباعة) */}
+                <div style={{ background: "#fff", border: `1px solid ${C.paperLine}`, borderRadius: 8, padding: 14, marginBottom: 14 }}>
+                  <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 20, color: C.ink }}>
+                    تقرير رواتب شهر {MONTHS_AR[month - 1]} {year} — {data.companyName}
+                  </div>
+                  <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+                    <span>عدد العمال: <b>{payroll.length}</b></span>
+                    <span>إجمالي الأساسي: <b>{fmt(totals.basePay)}</b></span>
+                    <span>إجمالي الإضافي: <b style={{ color: C.blue }}>{fmt(totals.overtimePay)}</b></span>
+                    <span>إجمالي السلف: <b style={{ color: C.oxblood }}>{fmt(totals.advance)}</b></span>
+                    <span>الصافي الكلي: <b style={{ color: C.orange }}>{fmt(totals.net)}</b></span>
+                  </div>
+                  <p style={{ fontSize: 11, color: C.inkSoft, marginTop: 6 }}>يوم العمل = 8 ساعات. أجر الساعة الإضافية = سعر يوم العمل ÷ 8.</p>
+                </div>
+
+                <div style={{ overflowX: "auto", border: `1px solid ${C.paperLine}`, borderRadius: 8, background: "#fff" }}>
+                  <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ background: C.paperDark }}>
+                        {["العامل","سعر اليوم","ساعات العمل","أيام مدفوعة","أيام غياب","ساعات إضافية","أجر إضافي","الإجمالي","سلفة/خصم","الصافي"].map((h) => (
+                          <th key={h} style={{ padding: 8, borderBottom: `2px solid ${C.ink}`, whiteSpace: "nowrap" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {payroll.map((p) => (
+                        <tr key={p.worker.id}>
+                          <td style={{ padding: 8, fontWeight: 700, borderBottom: `1px solid ${C.paperLine}` }}>{p.worker.name}</td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}` }}>{fmt(p.worker.rate)}</td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}`, color: C.green }}>{fmt(p.workedHours)}</td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}`, fontWeight: 700 }}>{fmt(p.paidDays)}</td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}`, color: C.oxblood }}>{p.absentDays}</td>
+                          <td style={{ padding: 6, textAlign: "center", borderBottom: `1px solid ${C.paperLine}` }}>
+                            <input
+                              type="number"
+                              defaultValue={p.overtimeHours || ""}
+                              onBlur={(e) => setOvertime(p.worker.id, e.target.value)}
+                              placeholder="0"
+                              className="no-print"
+                              style={{ width: 60, padding: 6, border: `1px solid ${C.paperLine}`, borderRadius: 6, textAlign: "center" }}
+                            />
+                          </td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}`, color: C.blue }}>{fmt(p.overtimePay)}</td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}` }}>{fmt(p.gross)}</td>
+                          <td style={{ padding: 6, textAlign: "center", borderBottom: `1px solid ${C.paperLine}` }}>
+                            <input
+                              type="number"
+                              defaultValue={p.advance || ""}
+                              onBlur={(e) => setAdvance(p.worker.id, e.target.value)}
+                              placeholder="0"
+                              className="no-print"
+                              style={{ width: 70, padding: 6, border: `1px solid ${C.paperLine}`, borderRadius: 6, textAlign: "center" }}
+                            />
+                          </td>
+                          <td style={{ padding: 8, textAlign: "center", borderBottom: `1px solid ${C.paperLine}`, fontWeight: 800, color: C.orange }}>
+                            {fmt(p.net)}
+                            <div style={{ fontSize: 10, color: C.inkSoft, fontWeight: 400 }}>({daysHoursLabel(p.totalHoursEquivalent)})</div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr style={{ background: C.paperDark, fontWeight: 800 }}>
+                        <td colSpan={6} style={{ padding: 8, textAlign: "end" }}>الإجمالي</td>
+                        <td style={{ padding: 8, textAlign: "center", color: C.blue }}>{fmt(totals.overtimePay)}</td>
+                        <td style={{ padding: 8, textAlign: "center" }}>{fmt(totals.gross)}</td>
+                        <td style={{ padding: 8, textAlign: "center" }}>{fmt(totals.advance)}</td>
+                        <td style={{ padding: 8, textAlign: "center", color: C.orange }}>{fmt(totals.net)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+                <p style={{ fontSize: 11, color: C.inkSoft, marginTop: 6 }}>الرقم بين قوسين أسفل "الصافي" هو إجمالي وقت العمل (أيام + ساعات إضافية) محسوباً على أساس يوم = 8 ساعات.</p>
+                <button
+                  onClick={() => window.print()}
+                  className="no-print"
+                  style={{ marginTop: 14, background: C.ink, color: C.paper, border: "none", borderRadius: 8, padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontFamily: "Cairo", fontWeight: 700 }}
+                >
+                  <Printer size={16} /> طباعة الكشف
+                </button>
+              </>
+            )}
+          </section>
+        )}
+
+        <footer className="no-print" style={{ marginTop: 30, textAlign: "center" }}>
+          <button
+            onClick={() => askConfirm("سيتم حذف كل البيانات نهائياً. متأكد؟", () => { persist(DEFAULT_DATA); notify("تم مسح جميع البيانات"); })}
+            style={{ background: "transparent", border: "none", color: C.inkSoft, fontSize: 12, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}
+          >
+            <RotateCcw size={13} /> إعادة تعيين كل البيانات
+          </button>
+        </footer>
+      </main>
+
+      {confirmModal && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed", inset: 0, background: "rgba(43,38,32,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20,
+          }}
+        >
+          <div style={{ background: C.paper, border: `2px solid ${C.ink}`, borderRadius: 10, padding: 20, maxWidth: 380, width: "100%", boxShadow: "0 10px 30px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 20, color: C.orange, marginBottom: 8 }}>تأكيد</div>
+            <p style={{ margin: "0 0 18px", lineHeight: 1.6, fontSize: 14 }}>{confirmModal.message}</p>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmModal(null)}
+                style={{ background: "transparent", border: `1px solid ${C.paperLine}`, color: C.inkSoft, borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontFamily: "Cairo", fontWeight: 600 }}
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={() => { const fn = confirmModal.onYes; setConfirmModal(null); fn && fn(); }}
+                style={{ background: C.orange, border: "none", color: "#fff", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontFamily: "Cairo", fontWeight: 700 }}
+              >
+                تأكيد
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {dayModal && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed", inset: 0, background: "rgba(43,38,32,0.55)",
+            display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, padding: 20,
+          }}
+        >
+          <div style={{ background: C.paper, border: `2px solid ${C.ink}`, borderRadius: 10, padding: 20, maxWidth: 340, width: "100%", boxShadow: "0 10px 30px rgba(0,0,0,0.3)" }}>
+            <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 20, color: C.orange, marginBottom: 4 }}>
+              يوم {dayModal.day} — {dayModal.workerName}
+            </div>
+            <p style={{ margin: "0 0 10px", fontSize: 12, color: C.inkSoft }}>أدخل عدد ساعات العمل لهذا اليوم. أدخل 0 لتسجيله كغائب.</p>
+            <input
+              type="number"
+              autoFocus
+              min="0"
+              step="0.5"
+              value={dayModal.value}
+              onChange={(e) => setDayModal({ ...dayModal, value: e.target.value })}
+              onKeyDown={(e) => { if (e.key === "Enter") saveDayModal(); }}
+              placeholder="عدد الساعات"
+              style={{ width: "100%", padding: 10, border: `1px solid ${C.paperLine}`, borderRadius: 6, fontSize: 16, textAlign: "center", marginBottom: 16 }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "space-between" }}>
+              <button
+                onClick={() => setDayModal(null)}
+                style={{ background: "transparent", border: `1px solid ${C.paperLine}`, color: C.inkSoft, borderRadius: 6, padding: "8px 14px", cursor: "pointer", fontFamily: "Cairo", fontWeight: 600 }}
+              >
+                إلغاء
+              </button>
+              <button
+                onClick={saveDayModal}
+                style={{ background: C.orange, border: "none", color: "#fff", borderRadius: 6, padding: "8px 20px", cursor: "pointer", fontFamily: "Cairo", fontWeight: 700 }}
+              >
+                حفظ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div
+          className="no-print"
+          style={{
+            position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)",
+            background: C.ink, color: C.paper, padding: "10px 20px", borderRadius: 8,
+            fontSize: 13, fontWeight: 600, boxShadow: "0 4px 14px rgba(0,0,0,0.3)", zIndex: 50,
+            maxWidth: "90%", textAlign: "center",
+          }}
+        >
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MonthPicker({ year, month, onChange }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, margin: "8px 0 16px" }}>
+      <button onClick={() => onChange(1)} style={{ background: "#fff", border: `1px solid ${C.paperLine}`, borderRadius: 6, padding: 8, cursor: "pointer" }}><ChevronRight size={18} /></button>
+      <div style={{ fontFamily: "'Lalezar', sans-serif", fontSize: 22, color: C.ink, minWidth: 160, textAlign: "center" }}>
+        {MONTHS_AR[month - 1]} {year}
+      </div>
+      <button onClick={() => onChange(-1)} style={{ background: "#fff", border: `1px solid ${C.paperLine}`, borderRadius: 6, padding: 8, cursor: "pointer" }}><ChevronLeft size={18} /></button>
+    </div>
+  );
+}
+
+function Legend() {
+  const items = [
+    { fill: "transparent", border: true, t: "لم يُسجَّل" },
+    { fill: C.oxblood, t: "غائب (0 ساعة)" },
+    { fill: C.amber, t: "دوام جزئي (أقل من 8)" },
+    { fill: C.green, t: "يوم كامل (8 ساعات)" },
+    { fill: C.blue, t: "أكثر من 8 ساعات" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 12, fontSize: 12, color: C.inkSoft }}>
+      {items.map((it) => (
+        <div key={it.t} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 16, height: 16, borderRadius: "50%", background: it.border ? "#fff" : it.fill, border: it.border ? `1.5px dashed ${C.paperLine}` : "none" }} />
+          {it.t}
+        </div>
+      ))}
+      <div style={{ color: C.inkSoft }}>اضغط على الدائرة لإدخال عدد ساعات العمل (0 = غائب)</div>
+    </div>
+  );
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<AttendanceLedger />);
+window.__APP_MOUNTED__ = true;
+
+</script>
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
+</script>
+</body>
+</html>
